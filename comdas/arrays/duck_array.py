@@ -6,8 +6,6 @@ Patch data.
 
 from __future__ import annotations
 
-import itertools
-
 import numpy as np
 
 from comdas.codecs.base import Codec, CompressedPayload
@@ -176,41 +174,25 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
             f"overlay={self.overlay_size})"
         )
 
-    def _key_to_index_lists(self, key) -> list[list[int]]:
+    def _selected_positions(self, key) -> tuple[np.ndarray, ...]:
         """
-        Normalize a NumPy-style key into per-axis integer index lists.
+        Find the physical position of every element selected by ``key``.
 
-        :param key: A NumPy-style index/slice key.
-        :returns: One list of concrete integer indices per axis.
-        :rtype: list[list[int]]
-        """
-        if not isinstance(key, tuple):
-            key = (key,)
-        key = key + (slice(None),) * (self.ndim - len(key))
-        axes: list[list[int]] = []
-        for k, dim in zip(key, self.shape):
-            if isinstance(k, (int, np.integer)):
-                axes.append([int(k)])
-            elif isinstance(k, slice):
-                axes.append(list(range(*k.indices(dim))))
-            else:
-                axes.append(np.atleast_1d(np.asarray(k)).tolist())
-        return axes
+        NumPy itself applies ``key`` (to zero-copy broadcast views of
+        per-axis index grids), so the result follows NumPy's indexing
+        semantics: negative indices, bounds checks, slices,
+        broadcast/paired advanced indices, ellipsis, newaxis, and boolean
+        masks.
 
-    @staticmethod
-    def _normalize_key(key, ndim: int) -> tuple:
+        :param key: A NumPy-style index key.
+        :returns: One integer array per axis, each with the shape of
+            ``dense[key]``, giving the coordinates of each
+            selected element.
+        :rtype: tuple[numpy.ndarray, ...]
+        :raises IndexError: If ``key`` is invalid for this array's shape.
         """
-        Pad ``key`` with trailing full slices to length ``ndim``.
-
-        :param key: A NumPy-style index/slice key.
-        :param ndim: Number of dimensions to pad to.
-        :type ndim: int
-        :returns: The normalized, tuple-form key.
-        :rtype: tuple
-        """
-        if not isinstance(key, tuple):
-            key = (key,)
-        return key + (slice(None),) * (ndim - len(key))
+        grids = np.indices(self.shape, sparse=True)
+        return tuple(np.broadcast_to(g, self.shape)[key] for g in grids)
 
     def __getitem__(self, key):
         """
@@ -223,28 +205,24 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
         if not self._overlay:
             return self._codec.decode_partial(self._payload, key)
 
-        axes = self._key_to_index_lists(key)
-        axes_sets = [set(a) for a in axes]
-        touched = [
-            (idx, val)
-            for idx, val in self._overlay.items()
-            if all(idx[d] in axes_sets[d] for d in range(self.ndim))
-        ]
+        positions = self._selected_positions(key)
         base = np.array(
             self._codec.decode_partial(self._payload, key), copy=True
         )
-        if not touched:
-            return base
 
-        norm_key = self._normalize_key(key, self.ndim)
-        for idx, val in touched:
-            local = tuple(
-                axes[d].index(idx[d])
-                for d, k in enumerate(norm_key)
-                if not isinstance(k, (int, np.integer))
-            )
-            base[local] = val
-        return base
+        # Match pending overlay writes to the selected elements by flat
+        # physical index.
+        selected = np.ravel_multi_index(positions, self.shape)
+        overlay_idx = np.ravel_multi_index(
+            tuple(np.array(list(self._overlay)).T), self.shape
+        )
+        overlay_vals = np.array(list(self._overlay.values()), dtype=self.dtype)
+        hit = np.isin(selected, overlay_idx)
+        if hit.any():
+            order = np.argsort(overlay_idx)
+            loc = np.searchsorted(overlay_idx, selected[hit], sorter=order)
+            base[hit] = overlay_vals[order[loc]]
+        return base[()] if base.ndim == 0 else base
 
     def __setitem__(self, key, value) -> None:
         """
@@ -277,10 +255,9 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
             except NotImplementedError:
                 pass
 
-        axes = self._key_to_index_lists(key)
-        size = 1
-        for a in axes:
-            size *= len(a)
+        positions = self._selected_positions(key)
+        target_shape = positions[0].shape
+        size = positions[0].size
 
         if (
             size > self._max_pending_writes
@@ -291,10 +268,21 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
             self.consolidate(dense=dense)
             return
 
-        indices = list(itertools.product(*axes))
-        values = np.broadcast_to(value, tuple(len(a) for a in axes)).ravel()
-        for idx, val in zip(indices, values):
-            self._overlay[idx] = val
+        values = np.asarray(value).astype(self.dtype, copy=False)
+        # Like NumPy assignment, allow extra leading length-1 dims on value.
+        while values.ndim > len(target_shape) and values.shape[0] == 1:
+            values = values[0]
+        try:
+            values = np.broadcast_to(values, target_shape)
+        except ValueError:
+            raise ValueError(
+                f"could not broadcast input array from shape "
+                f"{np.shape(value)} into shape {target_shape}"
+            ) from None
+
+        flat_positions = [p.ravel() for p in positions]
+        for idx, val in zip(zip(*flat_positions), values.ravel()):
+            self._overlay[tuple(int(i) for i in idx)] = val
 
     def consolidate(
         self,
