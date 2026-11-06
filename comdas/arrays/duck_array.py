@@ -11,6 +11,75 @@ import numpy as np
 from comdas.codecs.base import Codec, CompressedPayload
 
 
+def _materialize(obj):
+    """
+    Replace every :class:`DuckArray` in ``obj`` with a dense NumPy array,
+    recursing into lists, tuples, and dicts (e.g. the list passed to
+    ``np.concatenate``).
+
+    :param obj: An argument (or container of arguments) to a NumPy call.
+    :returns: ``obj`` with DuckArrays materialized.
+    """
+    if isinstance(obj, DuckArray):
+        return np.asarray(obj)
+    if type(obj) is list:
+        return [_materialize(o) for o in obj]
+    if type(obj) is tuple:
+        return tuple(_materialize(o) for o in obj)
+    if type(obj) is dict:
+        return {k: _materialize(v) for k, v in obj.items()}
+    return obj
+
+
+def _densify_out(kwargs: dict) -> tuple[dict, list]:
+    """
+    Swap any DuckArray in an ``out=`` kwarg for a dense temporary buffer.
+
+    The buffer starts as a copy of the DuckArray's current values, so
+    elements a ``where=`` mask leaves untouched are preserved.
+
+    :param kwargs: Keyword arguments to a NumPy function/ufunc.
+    :returns: ``(new_kwargs, pairs)`` where ``pairs`` is a list of
+        ``(duck_array, dense_buffer)`` to pass to :func:`_write_back_out`.
+    """
+    out = kwargs.get("out")
+    if out is None:
+        return kwargs, []
+    is_tuple = isinstance(out, tuple)
+    pairs = []
+    new_out = []
+    for o in out if is_tuple else (out,):
+        if isinstance(o, DuckArray):
+            dense = np.asarray(o)
+            pairs.append((o, dense))
+            new_out.append(dense)
+        else:
+            new_out.append(o)
+    new_kwargs = dict(kwargs)
+    new_kwargs["out"] = tuple(new_out) if is_tuple else new_out[0]
+    return new_kwargs, pairs
+
+
+def _write_back_out(result, pairs: list):
+    """
+    Fold dense ``out`` buffers back into their DuckArrays (re-encoding
+    them) and return those DuckArrays in place of the buffers.
+
+    :param result: The value returned by the NumPy call.
+    :param pairs: As returned by :func:`_densify_out`.
+    :returns: ``result``, with dense buffers replaced by their DuckArrays.
+    """
+    if not pairs:
+        return result
+    swap = {}
+    for duck, dense in pairs:
+        duck.consolidate(dense=dense)
+        swap[id(dense)] = duck
+    if isinstance(result, tuple):
+        return tuple(swap.get(id(r), r) for r in result)
+    return swap.get(id(result), result)
+
+
 class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
     """
     A NumPy-like duck array backed by a compressed payload and codec defining
@@ -129,8 +198,13 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
 
     def __array_function__(self, func, types, args, kwargs):
         """
-        Apply a numpy function to this array. Decompresses the
-        array before applying the NumPy function.
+        Apply a numpy function to this array. Decompresses any DuckArrays
+        among the arguments (including inside lists/tuples/dicts, e.g. for
+        ``np.concatenate``) before applying the NumPy function.
+
+        If a DuckArray is given as ``out=``, the result is computed into a
+        dense buffer and then re-encoded into that DuckArray (see
+        :meth:`consolidate`), which is returned in place of the buffer.
 
         NOTE: Some codecs support efficient operations directly
         on the compressed representation. We should provide a way
@@ -146,12 +220,18 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
         :param kwargs: Keyword arguments to ``func``.
         :returns: The result of calling ``func`` on materialized arrays.
         """
-        args = [np.asarray(a) if isinstance(a, DuckArray) else a for a in args]
-        return func(*args, **kwargs)
+        kwargs, out_pairs = _densify_out(kwargs)
+        result = func(*_materialize(args), **_materialize(kwargs))
+        return _write_back_out(result, out_pairs)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         """
         Materializes the array then applies the ufunc.
+
+        DuckArrays given as ``out=`` (including via in-place operators such
+        as ``+=``) or as the target of ``ufunc.at`` are updated by computing
+        into a dense buffer and re-encoding it (see :meth:`consolidate`).
+        Re-encoding with a lossy codec can introduce reconstruction error.
 
         NOTE: We should explore per-codec optimizations.
 
@@ -161,10 +241,20 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
         :param kwargs: Keyword arguments to the ufunc.
         :returns: The result of calling the ufunc on materialized arrays.
         """
-        inputs = [
-            np.asarray(i) if isinstance(i, DuckArray) else i for i in inputs
-        ]
-        return getattr(ufunc, method)(*inputs, **kwargs)
+        kwargs, out_pairs = _densify_out(kwargs)
+
+        # ufunc.at modifies its first input in place.
+        if method == "at" and isinstance(inputs[0], DuckArray):
+            target = inputs[0]
+            dense = np.asarray(target)
+            ufunc.at(dense, *_materialize(inputs[1:]), **_materialize(kwargs))
+            target.consolidate(dense=dense)
+            return None
+
+        result = getattr(ufunc, method)(
+            *_materialize(inputs), **_materialize(kwargs)
+        )
+        return _write_back_out(result, out_pairs)
 
     def __repr__(self) -> str:
         ratio = self._codec.compression_ratio(self._payload)
