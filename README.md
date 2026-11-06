@@ -19,8 +19,8 @@ With ComDAS you can:
 
 | Codec | Main setting | Reference |
 | --- | --- | --- |
-| [SVD](https://byron-selvage.github.io/ComDAS/codecs/svd.html) | `rank` or retained `energy` | [NumPy SVD](https://numpy.org/doc/1.22/reference/generated/numpy.linalg.svd.html) |
-| [Wavelet](https://byron-selvage.github.io/ComDAS/codecs/wavelet.html) | `keep_fraction` or `threshold` | [PyWavelets](https://doi.org/10.21105/joss.01237); [DeVore et al. (1992)](https://doi.org/10.1109/18.119733) |
+| [SVD](https://dasdae.github.io/ComDAS/codecs/svd.html) | `rank` or retained `energy` | [NumPy SVD](https://numpy.org/doc/1.22/reference/generated/numpy.linalg.svd.html) |
+| [Wavelet](https://dasdae.github.io/ComDAS/codecs/wavelet.html) | `keep_fraction` or `threshold` | [PyWavelets](https://doi.org/10.21105/joss.01237); [DeVore et al. (1992)](https://doi.org/10.1109/18.119733) |
 
 ## Installation
 
@@ -32,12 +32,12 @@ pip install comdas
 
 ## Documentation
 
-Full documentation is available at [byron-selvage.github.io/ComDAS](https://byron-selvage.github.io/ComDAS/), including:
+Full documentation is available at [dasdae.github.io/ComDAS](https://dasdae.github.io/ComDAS/), including:
 
-- [Quick start](https://byron-selvage.github.io/ComDAS/quickstart.html): compress a patch, save a compressed file, and read it back
-- [Codecs](https://byron-selvage.github.io/ComDAS/codecs/svd.html): configuration options and examples for each codec
-- [Examples](https://byron-selvage.github.io/ComDAS/examples/compression_comparison.html)
-- [API reference](https://byron-selvage.github.io/ComDAS/api/index.html)
+- [Quick start](https://dasdae.github.io/ComDAS/quickstart.html): compress a patch, save a compressed file, and read it back
+- [Codecs](https://dasdae.github.io/ComDAS/codecs/svd.html): configuration options and examples for each codec
+- [Examples](https://dasdae.github.io/ComDAS/examples/compression_comparison.html)
+- [API reference](https://dasdae.github.io/ComDAS/api/index.html)
 
 ## License
 
