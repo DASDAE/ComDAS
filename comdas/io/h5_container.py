@@ -31,8 +31,12 @@ File layout
           attrs_json         (str)   -- PatchAttrs.model_dump_json()
         <codec-specific datasets/attrs, written by codec.payload_to_group>
         /coords
-          <dim_name>              -- one dataset per dim, full coord array
-            attrs: dtype (str), units (str, empty if none)
+          <coord_name>            -- one dataset per coord (dimensional and
+                                     auxiliary, e.g. latitude), full array
+            attrs: dtype (str), units (str, empty if none),
+                   dims_json (str) -- JSON list of the data dims this
+                                      coord is associated with, e.g.
+                                      ["distance"].
       /patch_0001
         ...
 
@@ -51,6 +55,8 @@ format automatically. Writing has one convenience function,
 """
 
 from __future__ import annotations
+
+import json
 
 import numpy as np
 
@@ -208,15 +214,43 @@ def _write_patch(
 
     codec.payload_to_group(payload, grp)
 
+    # Store every coord (dimensional and auxiliary, e.g. latitude), along
+    # with which data dims it is associated with.
     coord_grp = grp.create_group("coords")
-    for dim in patch.dims:
-        arr = patch.coords.get_array(dim)
+    for coord_name, coord in patch.coords.coord_map.items():
+        arr = patch.coords.get_array(coord_name)
         storable, dtype_str = _dump_coord_array(arr)
-        cds = coord_grp.create_dataset(dim, data=storable)
+        cds = coord_grp.create_dataset(coord_name, data=storable)
         cds.attrs["dtype"] = dtype_str
-        coord = patch.coords.get_coord(dim)
+        cds.attrs["dims_json"] = json.dumps(
+            list(patch.coords.dim_map[coord_name])
+        )
         units = getattr(coord, "units", None)
         cds.attrs["units"] = str(units) if units is not None else ""
+
+
+def _load_patch_attrs(raw_json: str) -> dc.PatchAttrs:
+    """
+    Load ``PatchAttrs`` from JSON written by ``PatchAttrs.model_dump_json``.
+
+    DASCore serializes a missing coord ``step`` or ``units`` (e.g. for an
+    irregular or unitless coordinate) as the string ``"None"``, which it
+    then fails to parse back. Convert exactly those values to ``None``
+    before validating.
+
+    :param raw_json: The stored ``attrs_json`` string.
+    :type raw_json: str
+    :returns: The validated patch attrs.
+    :rtype: dascore.PatchAttrs
+    """
+    values = json.loads(raw_json)
+    for summary in (values.get("coords") or {}).values():
+        if not isinstance(summary, dict):
+            continue
+        for field in ("step", "units"):
+            if summary.get(field) == "None":
+                summary[field] = None
+    return dc.PatchAttrs.model_validate(values)
 
 
 def _read_patch(patch_group) -> dc.Patch:
@@ -241,13 +275,27 @@ def _read_patch(patch_group) -> dc.Patch:
     dims = tuple(patch_group.attrs["dims"].split(","))
     coord_grp = patch_group["coords"]
     coords = {}
-    for dim in dims:
-        ds = coord_grp[dim]
-        raw = ds[:]
+    for coord_name, ds in coord_grp.items():
+        raw = ds[()]
         dtype_str = ds.attrs.get("dtype", str(raw.dtype))
-        coords[dim] = _load_coord_array(raw, dtype_str)
+        values = _load_coord_array(raw, dtype_str)
+        units = ds.attrs.get("units", "") or None
 
-    attrs = dc.PatchAttrs.model_validate_json(patch_group.attrs["attrs_json"])
+        if "dims_json" in ds.attrs:
+            coord_dims = tuple(json.loads(ds.attrs["dims_json"]))
+        elif coord_name in dims:
+            coord_dims = (coord_name,)
+        else:
+            raise ValueError(
+                f"Missing dimension association for coordinate {coord_name!r}"
+            )
+
+        coords[coord_name] = (
+            coord_dims,
+            dc.get_coord(data=values, units=units),
+        )
+
+    attrs = _load_patch_attrs(patch_group.attrs["attrs_json"])
 
     return dc.Patch(
         data=compressed_array, coords=coords, dims=dims, attrs=attrs
@@ -302,7 +350,7 @@ class ComdasV1(FiberIO):
         out = []
         for name in _patch_group_names(resource):
             grp = resource["patches"][name]
-            attrs = dc.PatchAttrs.model_validate_json(grp.attrs["attrs_json"])
+            attrs = _load_patch_attrs(grp.attrs["attrs_json"])
             attrs = attrs.update(
                 file_format=self.name,
                 file_version=self.version,
@@ -328,7 +376,7 @@ class ComdasV1(FiberIO):
         patches = []
         for name in _patch_group_names(resource):
             grp = resource["patches"][name]
-            attrs = dc.PatchAttrs.model_validate_json(grp.attrs["attrs_json"])
+            attrs = _load_patch_attrs(grp.attrs["attrs_json"])
             if _patch_matches_kwargs(attrs, kwargs):
                 patches.append(_read_patch(grp))
         return dc.spool(patches)
