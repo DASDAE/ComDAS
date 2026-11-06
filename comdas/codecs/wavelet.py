@@ -27,12 +27,16 @@ class WaveletPayload(CompressedPayload):
     :vartype indices: numpy.ndarray
     :ivar values: Values of retained coefficients.
     :vartype values: numpy.ndarray
+    :ivar threshold: The absolute threshold used to select coefficients, if
+        encoded in threshold mode. ``None`` if encoded with ``keep_fraction``.
+    :vartype threshold: float or None
     """
 
     wavelet: str
     mode: str
     indices: np.ndarray
     values: np.ndarray
+    threshold: float | None = None
 
     @property
     def coeff_shapes(self) -> list:
@@ -63,13 +67,18 @@ class WaveletPayload(CompressedPayload):
         """
         The compression parameters used for this payload.
 
+        Threshold-encoded payloads report their ``threshold``, so re-encoding
+        applies the same rule (a derived ``keep_fraction`` could be 0, which
+        isn't a valid input). Otherwise the retained ``keep_fraction``.
+
         :rtype: dict
         """
-        return {
-            "wavelet": self.wavelet,
-            "mode": self.mode,
-            "keep_fraction": self.values.size / self.n_coeffs,
-        }
+        params = {"wavelet": self.wavelet, "mode": self.mode}
+        if self.threshold is not None:
+            params["threshold"] = self.threshold
+        else:
+            params["keep_fraction"] = self.values.size / self.n_coeffs
+        return params
 
 
 class WaveletCodec(Codec):
@@ -98,6 +107,7 @@ class WaveletCodec(Codec):
     """
 
     name = "WAVELET"
+    exclusive_params = ("keep_fraction", "threshold")
     version = "1"
 
     def __init__(
@@ -191,6 +201,7 @@ class WaveletCodec(Codec):
             mode=mode,
             indices=indices.astype(index_dtype),
             values=np.ascontiguousarray(flat[indices]),
+            threshold=float(threshold) if threshold is not None else None,
         )
 
     def decode(self, payload: WaveletPayload) -> np.ndarray:
@@ -244,6 +255,8 @@ class WaveletCodec(Codec):
         group.create_dataset("values", data=payload.values)
         group.attrs["wavelet"] = payload.wavelet
         group.attrs["mode"] = payload.mode
+        if payload.threshold is not None:
+            group.attrs["threshold"] = payload.threshold
 
     def payload_from_group(
         self, group, *, original_shape: tuple[int, ...], dtype: np.dtype
@@ -270,4 +283,9 @@ class WaveletCodec(Codec):
             mode=str(group.attrs["mode"]),
             indices=group["indices"][:],
             values=group["values"][:],
+            threshold=(
+                float(group.attrs["threshold"])
+                if "threshold" in group.attrs
+                else None
+            ),
         )

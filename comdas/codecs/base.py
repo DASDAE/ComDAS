@@ -70,11 +70,17 @@ class Codec(ABC):
     :cvar max_pending_writes: Maximum number of pending writes before automatic consolidation.
         This is only used by codecs that do not implement :meth:`partial_write`.
     :vartype max_pending_writes: int
+    :cvar exclusive_params: Names of mutually exclusive ``encode`` parameters
+        that select the compression mode (e.g. ``("rank", "energy")``). When
+        a caller overrides one of them, the others are dropped from the
+        payload's stored parameters. See :meth:`merge_compression_params`.
+    :vartype exclusive_params: tuple[str, ...]
     """
 
     name: str = ""
     version: str = "1"
     max_pending_writes: int = 10_000
+    exclusive_params: tuple[str, ...] = ()
 
     _registry: dict[str, type[Codec]] = {}
 
@@ -210,6 +216,32 @@ class Codec(ABC):
         :returns: Total size in bytes of the payload's stored arrays.
         :rtype: int
         """
+
+    def merge_compression_params(self, stored: dict, overrides: dict) -> dict:
+        """
+        Combine a payload's stored compression parameters with explicit
+        overrides, for re-encoding (e.g. in
+        :meth:`~comdas.arrays.duck_array.DuckArray.consolidate`).
+
+        Overrides win. If an override selects one of the mutually exclusive
+        :attr:`exclusive_params`, the other exclusive params are dropped
+        from ``stored`` so the old mode doesn't conflict with the new one.
+        Conflicts *within* ``overrides`` are left for :meth:`encode` to
+        reject.
+
+        :param stored: The payload's ``compression_params``.
+        :type stored: dict
+        :param overrides: Explicit keyword arguments from the caller.
+        :type overrides: dict
+        :returns: The parameters to pass to :meth:`encode`.
+        :rtype: dict
+        """
+        merged = dict(stored)
+        if any(k in self.exclusive_params for k in overrides):
+            for k in self.exclusive_params:
+                merged.pop(k, None)
+        merged.update(overrides)
+        return merged
 
     def compression_ratio(self, payload: CompressedPayload) -> float:
         """

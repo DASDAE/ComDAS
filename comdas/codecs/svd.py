@@ -78,6 +78,7 @@ class SVDCodec(Codec):
 
     # Writes are expensive with SVD
     max_pending_writes = 10_000
+    exclusive_params = ("rank", "energy")
 
     def __init__(self, rank: int | None = None, energy: float | None = None):
         if rank is not None and energy is not None:

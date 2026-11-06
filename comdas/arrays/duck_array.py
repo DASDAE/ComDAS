@@ -383,19 +383,22 @@ class DuckArray(np.lib.mixins.NDArrayOperatorsMixin):
         """
         Fold the write overlay into a freshly-compressed payload.
 
-        By default, re-encodes using whatever compression level the
-        current payload already used.
+        By default, re-encodes using whatever compression parameters the
+        current payload already used. Any ``encode_kwargs`` given override
+        those (see :meth:`~comdas.codecs.base.Codec.merge_compression_params`).
 
         :param dense: Precomputed dense array to encode, if the
             caller already has one.
         :type dense: numpy.ndarray or None
-        :param encode_kwargs: Additional codec-specific kwargs
-            forwarded to ``codec.encode``.
+        :param encode_kwargs: Codec-specific kwargs forwarded to
+            ``codec.encode``, overriding the current payload's parameters.
         """
         if dense is None:
             dense = self.__array__()
 
-        encode_kwargs = self._payload.compression_params
+        params = self._codec.merge_compression_params(
+            self._payload.compression_params, encode_kwargs
+        )
 
-        self._payload = self._codec.encode(dense, **encode_kwargs)
+        self._payload = self._codec.encode(dense, **params)
         self._overlay.clear()
