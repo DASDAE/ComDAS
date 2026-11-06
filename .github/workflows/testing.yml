@@ -9,6 +9,7 @@ on:
             - ".github/workflows/testing.yml"
     pull_request:
         branches: [main]
+    workflow_dispatch:
 
 permissions:
     contents: read
