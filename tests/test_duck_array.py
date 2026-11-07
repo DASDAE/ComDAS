@@ -196,5 +196,153 @@ def test_partial_write_fallback_is_per_call():
     assert np.array_equal(np.asarray(ca)[10:13, 10:13], np.full((3, 3), 7.0))
 
 
+def make_pair(m=4, n=5):
+    """
+    A DuckArray (lossless DummyCodec) and a plain NumPy copy of the same
+    data, so that operations on both can be compared exactly.
+    """
+    A = np.arange(m * n, dtype=float).reshape(m, n)
+    codec = DummyCodec()
+    return DuckArray(codec.encode(A), codec), A.copy()
+
+
+def test_negative_write_visible_through_positive_index():
+    """
+    A write at a negative index should be visible when read back through
+    the equivalent positive index (and vice versa).
+    """
+    ca, expected = make_pair()
+    ca[-1, 0] = 999.0
+    expected[-1, 0] = 999.0
+
+    assert ca.overlay_size == 1
+    assert ca[3, 0] == 999.0
+    assert ca[-1, 0] == 999.0
+    np.testing.assert_array_equal(ca[3, :], expected[3, :])
+    np.testing.assert_array_equal(ca[-2:, :], expected[-2:, :])
+    np.testing.assert_array_equal(np.asarray(ca), expected)
+
+    ca.consolidate()
+    assert ca[3, 0] == 999.0
+
+
+def test_out_of_range_index_raises():
+    """
+    Out-of-range indices (including negative ones) should raise IndexError
+    for both reads and writes, as with NumPy.
+    """
+    ca, _ = make_pair()
+    ca[0, 0] = 1.0  # ensure reads go through the overlay path
+    with pytest.raises(IndexError):
+        ca[-5, 0] = 1.0
+    with pytest.raises(IndexError):
+        ca[4, 0] = 1.0
+    with pytest.raises(IndexError):
+        ca[-5, 0]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        ([0, 1], [1, 2]),  # paired advanced indices
+        ([[0], [2]], [1, 3]),  # broadcast index arrays
+        ([1, 1, 2], [0, 0, 4]),  # repeated indices
+        (slice(1, 3), [0, 4]),  # mixed basic/advanced
+        (-1, [-1, 0]),  # negative indices
+    ],
+)
+def test_paired_advanced_assignment_matches_numpy(key):
+    """
+    Advanced-index assignment should change exactly the elements NumPy
+    would change, and nothing else.
+    """
+    ca, expected = make_pair()
+    ca[key] = 999.0
+    expected[key] = 999.0
+    np.testing.assert_array_equal(np.asarray(ca), expected)
+    np.testing.assert_array_equal(ca[key], expected[key])
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ((slice(None), 0), np.arange(4.0)),  # column
+        ((0, slice(None)), np.arange(5.0)),  # row
+        ((slice(None), 0), 7.0),  # scalar
+        ((slice(0, 2), slice(None)), np.arange(5.0)),  # broadcast row
+        ((slice(None), 0), np.arange(4.0)[np.newaxis, :]),  # extra leading dim
+    ],
+)
+def test_column_vector_assignment_matches_numpy(key, value):
+    """
+    Assignments whose value must be broadcast against the indexed shape
+    should behave like NumPy.
+    """
+    ca, expected = make_pair()
+    ca[key] = value
+    expected[key] = value
+    np.testing.assert_array_equal(np.asarray(ca), expected)
+
+
+def test_invalid_broadcast_assignment_raises():
+    """
+    A value that can't broadcast to the indexed shape should raise ValueError.
+    """
+    ca, _ = make_pair()
+    with pytest.raises(ValueError):
+        ca[:, 0] = np.arange(5.0)
+
+
+def test_concatenate_accepts_duck_arrays():
+    """
+    NumPy functions taking containers of arrays should work with DuckArrays.
+    """
+    ca, expected = make_pair()
+    np.testing.assert_array_equal(
+        np.concatenate([ca, ca]), np.concatenate([expected, expected])
+    )
+    np.testing.assert_array_equal(
+        np.concatenate((ca, expected), axis=1),
+        np.concatenate((expected, expected), axis=1),
+    )
+    np.testing.assert_array_equal(
+        np.stack([ca, expected]), np.stack([expected, expected])
+    )
+
+
+def test_ufunc_out_updates_duck_array():
+    """
+    A ufunc writing to a DuckArray via ``out=`` should update it in place and
+    return it.
+    """
+    ca, expected = make_pair()
+    result = np.add(ca, 1, out=ca)
+    assert result is ca
+    np.testing.assert_array_equal(np.asarray(ca), expected + 1)
+
+    # A where mask must leave unselected elements untouched.
+    ca, expected = make_pair()
+    mask = expected > 10
+    np.multiply(ca, 2, out=ca, where=mask)
+    np.multiply(expected, 2, out=expected, where=mask)
+    np.testing.assert_array_equal(np.asarray(ca), expected)
+
+    # In-place operators go through the same path.
+    ca, expected = make_pair()
+    ca += 1
+    np.testing.assert_array_equal(np.asarray(ca), expected + 1)
+
+
+def test_ufunc_at_updates_duck_array():
+    """
+    ``ufunc.at`` modifies its first argument in place, so it must update
+    the DuckArray.
+    """
+    ca, expected = make_pair()
+    np.add.at(ca, ([0, 0, 3], [1, 1, 2]), 1.0)
+    np.add.at(expected, ([0, 0, 3], [1, 1, 2]), 1.0)
+    np.testing.assert_array_equal(np.asarray(ca), expected)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

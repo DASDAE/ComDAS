@@ -200,6 +200,53 @@ class TestSVDCodec(CodecContract):
             compressed[3, 4], codec.decode(payload)[3, 4]
         )
 
+    def test_consolidate_honors_rank_override(self):
+        """
+        Explicit encode kwargs passed to consolidate should be applied,
+        while omitting them keeps the payload's existing settings.
+        """
+        array = make_random_matrix()
+        codec = SVDCodec(rank=4)
+
+        ca = DuckArray(codec.encode(array), codec)
+        ca.consolidate()
+        assert ca.payload.rank == 4
+
+        ca.consolidate(rank=1)
+        assert ca.payload.rank == 1
+
+        # Switching to energy mode must drop the stored rank rather than
+        # raising for specifying both.
+        ca = DuckArray(codec.encode(array), codec)
+        ca.consolidate(energy=0.5)
+        assert ca.payload.rank < 4
+
+        with pytest.raises(ValueError):
+            ca.consolidate(rank=2, energy=0.9)
+
+    def test_svd_rejects_excess_indices(self):
+        """
+        Indexing a 2D array with more than two indices should raise
+        IndexError.
+        """
+        codec = self.make_codec()
+        array = make_random_matrix()
+        payload = codec.encode(array)
+        dense = codec.decode(payload)
+
+        with pytest.raises(IndexError):
+            codec.decode_partial(payload, (slice(None), slice(None), 0))
+        with pytest.raises(IndexError):
+            DuckArray(payload, codec)[:, :, 0]
+
+        for key in [(Ellipsis, 3), (np.newaxis, 2, slice(1, 4))]:
+            with pytest.warns(UserWarning):
+                partial = codec.decode_partial(payload, key)
+            np.testing.assert_allclose(partial, dense[key])
+        np.testing.assert_allclose(
+            codec.decode_partial(payload, (-1, -2)), dense[-1, -2]
+        )
+
 
 class TestWaveletCodec(CodecContract):
     def make_codec(self) -> WaveletCodec:
@@ -257,6 +304,51 @@ class TestWaveletCodec(CodecContract):
         codec = WaveletCodec(threshold=1.0)
         payload = codec.encode(make_random_matrix())
         assert np.all(np.abs(payload.values) > 1.0)
+
+    def test_zero_wavelet_payload_has_usable_repr(self):
+        """
+        A payload with no retained coefficients (e.g. all-zero data with a
+        threshold) should decode, have an infinite compression
+        ratio, and have a working repr.
+        """
+        codec = WaveletCodec(threshold=1)
+        payload = codec.encode(np.zeros((32, 32)))
+        assert payload.values.size == 0
+
+        ca = DuckArray(payload, codec)
+        np.testing.assert_array_equal(np.asarray(ca), np.zeros((32, 32)))
+        assert codec.compression_ratio(payload) == float("inf")
+        assert "DuckArray" in repr(ca)
+
+    def test_threshold_payload_consolidates_with_its_threshold(self, tmp_path):
+        """
+        A threshold-encoded payload should re-encode with the same threshold,
+        including after a file roundtrip, and including when no
+        coefficients were kept.
+        """
+        codec = WaveletCodec(threshold=1)
+        payload = codec.encode(np.zeros((32, 32)))
+        assert payload.compression_params["threshold"] == 1
+
+        ca = DuckArray(payload, codec)
+        ca.consolidate()
+        np.testing.assert_array_equal(np.asarray(ca), np.zeros((32, 32)))
+
+        # A write large enough to auto-consolidate.
+        ca[:, :] = 5.0
+        np.testing.assert_allclose(np.asarray(ca), 5.0)
+
+        with h5py.File(tmp_path / "wavelet.h5", "w") as f:
+            codec.payload_to_group(payload, f.create_group("p"))
+            restored = codec.payload_from_group(
+                f["p"],
+                original_shape=payload.original_shape,
+                dtype=payload.dtype,
+            )
+        assert restored.compression_params["threshold"] == 1
+
+        ca.consolidate(keep_fraction=0.5)
+        assert "threshold" not in ca.payload.compression_params
 
 
 if __name__ == "__main__":
