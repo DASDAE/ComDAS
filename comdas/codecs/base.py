@@ -245,18 +245,27 @@ class Codec(ABC):
 
     def compression_ratio(self, payload: CompressedPayload) -> float:
         """
-        Helper to determine the compression ratio of the payload.
+        Helper to determine the compression ratio of the payload's stored
+        arrays.
+
+        This only accounts for the payload's arrays, not metadata or HDF5
+        container overhead, so it is not the on-disk file compression ratio.
 
         :param payload: A payload previously produced by :meth:`encode`.
         :type payload: CompressedPayload
-        :returns: Original bytes divided by compressed bytes.
+        :returns: Original bytes divided by compressed bytes. ``inf`` if the
+            payload stores no bytes for a non-empty array, and ``nan`` if the
+            original array is empty too.
         :rtype: float
         """
         original_bytes = (
             int(np.prod(payload.original_shape))
             * np.dtype(payload.dtype).itemsize
         )
-        return original_bytes / self.compressed_size_bytes(payload)
+        compressed_bytes = self.compressed_size_bytes(payload)
+        if compressed_bytes == 0:
+            return float("inf") if original_bytes > 0 else float("nan")
+        return original_bytes / compressed_bytes
 
     @abstractmethod
     def payload_to_group(self, payload: CompressedPayload, group) -> None:

@@ -167,26 +167,34 @@ class SVDCodec(Codec):
 
         :param payload: A payload previously produced by :meth:`encode`.
         :type payload: SVDPayload
-        :param key: An int/slice index in the NumPy-style.
+        :param key: A NumPy-style index. Up to two ints/slices take the
+            fast path; anything else falls back to a full decode.
         :returns: The requested subset of the reconstructed array.
         :rtype: numpy.ndarray
+        :raises IndexError: If ``key`` is invalid for a 2D array (e.g. too
+            many indices or out of bounds), as with NumPy.
         """
         if not isinstance(key, tuple):
             key = (key,)
-        key = key + (slice(None),) * (2 - len(key))
-        row_key, col_key = key[0], key[1]
 
-        # If using complex indexing (anything more than a simple int or slice)
-        # Fall back to full decode
-        if not (
-            isinstance(row_key, (int, np.integer, slice))
-            and isinstance(col_key, (int, np.integer, slice))
-        ):
+        # Validate the key against the array shape using NumPy's rules.
+        np.broadcast_to(np.empty((), dtype=bool), payload.original_shape)[key]
+
+        def _is_simple(k) -> bool:
+            return isinstance(k, (int, np.integer, slice)) and not isinstance(
+                k, (bool, np.bool_)
+            )
+
+        # If using complex indexing (anything more than up to two simple
+        # ints/slices, e.g. arrays, ellipsis, newaxis) fall back to full decode
+        if len(key) > 2 or not all(_is_simple(k) for k in key):
             warn(
                 "Only simple int/slice indexing is supported for partial decoding. Fully decoding entire array and then applying the index."
             )
             return self.decode(payload)[key]
 
+        key = key + (slice(None),) * (2 - len(key))
+        row_key, col_key = key
         row_is_int = isinstance(row_key, (int, np.integer))
         col_is_int = isinstance(col_key, (int, np.integer))
 
