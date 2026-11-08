@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ComDAS"
-version = "0.2.0"
+version = "0.2.1"
 description = "DASCORE companion package that adds support for compressed DAS data"
 readme = "README.md"
 requires-python = ">=3.10"
