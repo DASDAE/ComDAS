@@ -1,6 +1,7 @@
 # ComDAS
 
-![Python versions tested](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)
+![Python versions tested](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24057407.svg)](https://doi.org/10.5281/zenodo.24057407)
+
 
 ComDAS (Compressed DAS) lets you store and work with compressed distributed acoustic sensing (DAS) data using ordinary [DASCore](https://dascore.org/) tools.
 
@@ -38,6 +39,10 @@ Full documentation is available at [dasdae.github.io/ComDAS](https://dasdae.gith
 - [Codecs](https://dasdae.github.io/ComDAS/codecs/svd.html): configuration options and examples for each codec
 - [Examples](https://dasdae.github.io/ComDAS/examples/compression_comparison.html)
 - [API reference](https://dasdae.github.io/ComDAS/api/index.html)
+
+## Citation
+
+Byron Selvage. (2026). DASDAE/ComDAS: v0.2.1 (Version v0.2.1) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24057407
 
 ## License
 
